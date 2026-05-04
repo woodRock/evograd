@@ -13,6 +13,7 @@ import torch
 
 from ..core.tensor import Tensor
 from ..nn import functional as F
+from ..mps.device import mps_safe_lstsq, mps_safe_mode
 
 
 # ------------------------------------------------------------------ #
@@ -31,18 +32,20 @@ class LinearRegression:
         self.bias: Optional[float] = None
 
     def fit(self, X: Tensor, y: Tensor) -> "LinearRegression":
-        x = X.data.double()
-        t = y.data.double().reshape(-1)
+        # lstsq needs float64 precision and doesn't benefit from MPS;
+        # solve on CPU and move weights back to the original device.
+        orig_device = X.device
+        x = X.data.cpu().float()
+        t = y.data.cpu().float().reshape(-1)
         if self._fit_intercept:
-            ones = torch.ones(x.shape[0], 1, dtype=x.dtype, device=x.device)
+            ones = torch.ones(x.shape[0], 1, dtype=x.dtype)
             x = torch.cat([x, ones], dim=1)
-        # β = pinv(X) y
-        beta = torch.linalg.lstsq(x, t).solution
+        beta = mps_safe_lstsq(x, t.unsqueeze(1)).squeeze(1)
         if self._fit_intercept:
-            self.weights = Tensor(beta[:-1].float())
+            self.weights = Tensor(beta[:-1].to(orig_device))
             self.bias = beta[-1].item()
         else:
-            self.weights = Tensor(beta.float())
+            self.weights = Tensor(beta.to(orig_device))
             self.bias = 0.0
         return self
 
@@ -133,8 +136,8 @@ class KNearestNeighbours:
         neighbours = self._y_train.data[idx]   # (N_test, k)
 
         if self._task == "classify":
-            # majority vote — works for arbitrary integer labels
-            pred = torch.mode(neighbours.long(), dim=1).values
+            # majority vote — mps_safe_mode falls back to CPU on MPS
+            pred = mps_safe_mode(neighbours.long(), dim=1)
             return Tensor(pred)
         else:
             return Tensor(neighbours.float().mean(dim=1))
@@ -194,14 +197,17 @@ class PCA:
         self._explained_variance: Optional[Tensor] = None
 
     def fit(self, X: Tensor) -> "PCA":
-        x = X.data.double()
+        # linalg.svd is not natively on MPS; compute on CPU, keep
+        # components on the original device for fast transform().
+        orig_device = X.device
+        x = X.data.cpu().float()
         mu = x.mean(0, keepdim=True)
         x_centered = x - mu
         _, S, Vt = torch.linalg.svd(x_centered, full_matrices=False)
-        self._mean = Tensor(mu.float().squeeze(0))
-        self._components = Tensor(Vt[:self._k].float())
-        var = (S[:self._k] ** 2 / (x.shape[0] - 1)).float()
-        self._explained_variance = Tensor(var)
+        self._mean = Tensor(mu.squeeze(0).to(orig_device))
+        self._components = Tensor(Vt[:self._k].to(orig_device))
+        var = S[:self._k] ** 2 / (x.shape[0] - 1)
+        self._explained_variance = Tensor(var.to(orig_device))
         return self
 
     def transform(self, X: Tensor) -> Tensor:
@@ -242,20 +248,20 @@ class KMeans:
         C = X.data[idx].clone()
 
         for _ in range(self._max_iter):
-            # assign
+            # ── assign ───────────────────────────────────────────
             dist = (X.data.unsqueeze(1) - C.unsqueeze(0)).pow(2).sum(-1)
-            labels = dist.argmin(1)
+            labels = dist.argmin(1)                    # (n,)
 
-            # update
-            new_C = torch.zeros_like(C)
-            counts = torch.zeros(self._k, device=device)
-            for j in range(self._k):
-                mask = labels == j
-                if mask.any():
-                    new_C[j] = X.data[mask].mean(0)
-                    counts[j] = mask.sum()
-                else:
-                    new_C[j] = C[j]
+            # ── update (vectorised — no Python loop over clusters) ─
+            # One-hot encode labels: (n, k), then batch matmul → (k, d)
+            one_hot = torch.zeros(n, self._k, device=device)
+            one_hot.scatter_(1, labels.unsqueeze(1), 1.0)
+            counts = one_hot.sum(0).clamp(min=1.0)    # (k,)
+            new_C = (one_hot.T @ X.data) / counts.unsqueeze(1)
+
+            # keep old centroid for empty clusters
+            empty = counts < 1.5
+            new_C[empty] = C[empty]
 
             shift = (new_C - C).norm()
             C = new_C

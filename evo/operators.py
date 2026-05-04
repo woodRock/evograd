@@ -2,8 +2,11 @@
 GPU-accelerated genetic operators.
 
 All operators work on the (P, G) genome tensor directly — no Python
-loops over individuals.  Where possible, operations fuse into a single
-CUDA kernel call via PyTorch's JIT / inductor backend.
+loops over individuals.  Dispatch order:
+  1. metalcompute custom Metal kernels (tier 2, Apple Silicon)
+  2. PyTorch MPS / CUDA native ops     (tier 1, any device)
+
+Tier selection is automatic — see evograd/mps/ops.py.
 
 Operators
 ---------
@@ -33,6 +36,7 @@ import math
 
 from ..core.tensor import Tensor
 from .population import Population
+from ..mps import ops as _mps_ops
 
 
 # ------------------------------------------------------------------ #
@@ -42,25 +46,14 @@ from .population import Population
 def tournament_select(pop: Population, k: int = 7) -> Tensor:
     """
     Batched tournament selection.
-
-    For each of the P slots in the output, sample k candidates
-    uniformly at random and return the one with highest fitness.
-    All P tournaments happen in parallel via gather+max on the GPU.
-
+    Dispatches to custom Metal kernels (tier 2) or PyTorch MPS/CUDA (tier 1).
     Returns a (P, G) genome tensor of selected individuals.
     """
     if pop.fitness is None:
         raise RuntimeError("evaluate() the population before selection")
-    P, G = pop.size, pop.genome_length
-    device = pop.genomes.device
-    fitness = pop.fitness.data             # (P,)
-    genomes = pop.genomes.data             # (P, G)
-
-    # candidate indices: (P, k)
-    candidates = torch.randint(0, P, (P, k), device=device)
-    cand_fit = fitness[candidates]         # (P, k)
-    winners = cand_fit.argmax(dim=1)       # (P,)
-    selected_idx = candidates[torch.arange(P, device=device), winners]
+    genomes = pop.genomes.data
+    # _mps_ops.tournament_select returns winner indices (P,)
+    selected_idx = _mps_ops.tournament_select(pop.fitness.data, k=k)
     return Tensor(genomes[selected_idx])
 
 
@@ -124,25 +117,11 @@ def sus_select(pop: Population) -> Tensor:
 
 def uniform_crossover(parents: Tensor, rate: float = 0.5) -> Tensor:
     """
-    Uniform crossover: pair consecutive individuals and swap each gene
-    independently with probability `rate`.
-
-    Input:  (P, G)  —  P must be even
-    Output: (P, G)  offspring
+    Uniform crossover — dispatches to Metal (tier 2) or PyTorch MPS (tier 1).
+    Input/Output: (P, G), P must be even.
     """
-    P, G = parents.shape
-    assert P % 2 == 0, "Population size must be even for crossover"
-    device = parents.device
-    g = parents.data.clone()
-    p1 = g[0::2]                           # (P/2, G)
-    p2 = g[1::2]
-    mask = torch.rand(P // 2, G, device=device) < rate
-    child1 = torch.where(mask, p1, p2)
-    child2 = torch.where(mask, p2, p1)
-    offspring = torch.empty_like(g)
-    offspring[0::2] = child1
-    offspring[1::2] = child2
-    return Tensor(offspring)
+    assert parents.shape[0] % 2 == 0, "Population size must be even"
+    return Tensor(_mps_ops.uniform_crossover(parents.data, rate=rate))
 
 
 def one_point_crossover(parents: Tensor) -> Tensor:
@@ -182,28 +161,9 @@ def two_point_crossover(parents: Tensor) -> Tensor:
 
 
 def sbx_crossover(parents: Tensor, eta: float = 20.0) -> Tensor:
-    """
-    Simulated Binary Crossover (SBX) — mimics one-point crossover
-    in real-coded parameter space.  `eta` controls offspring spread
-    (higher = closer to parents).
-    """
-    P, G = parents.shape
-    assert P % 2 == 0
-    device = parents.device
-    g = parents.data
-    p1, p2 = g[0::2].clone(), g[1::2].clone()
-    u = torch.rand(P // 2, G, device=device).clamp(1e-9, 1.0 - 1e-9)
-    beta = torch.where(
-        u <= 0.5,
-        (2.0 * u).pow(1.0 / (eta + 1)),
-        (1.0 / (2.0 * (1.0 - u))).pow(1.0 / (eta + 1)),
-    )
-    child1 = 0.5 * ((1 + beta) * p1 + (1 - beta) * p2)
-    child2 = 0.5 * ((1 - beta) * p1 + (1 + beta) * p2)
-    offspring = torch.empty_like(g)
-    offspring[0::2] = child1
-    offspring[1::2] = child2
-    return Tensor(offspring)
+    """SBX — dispatches to Metal (tier 2) or PyTorch MPS (tier 1)."""
+    assert parents.shape[0] % 2 == 0
+    return Tensor(_mps_ops.sbx_crossover(parents.data, eta=eta))
 
 
 def blend_crossover(parents: Tensor, alpha: float = 0.5) -> Tensor:
@@ -231,17 +191,10 @@ def blend_crossover(parents: Tensor, alpha: float = 0.5) -> Tensor:
 def gaussian_mutate(offspring: Tensor, sigma: float = 0.01,
                     rate: float = 1.0) -> Tensor:
     """
-    Add N(0, σ) to each gene independently.
-    `rate` < 1 applies mutation to only that fraction of genes.
+    Gaussian mutation — dispatches to Metal (tier 2) or PyTorch MPS (tier 1).
     """
-    g = offspring.data.clone()
-    if rate < 1.0:
-        mask = torch.rand_like(g) < rate
-        noise = torch.randn_like(g) * sigma
-        g = torch.where(mask, g + noise, g)
-    else:
-        g = g + torch.randn_like(g) * sigma
-    return Tensor(g)
+    return Tensor(_mps_ops.gaussian_mutate(offspring.data, sigma=sigma,
+                                            rate=rate))
 
 
 def uniform_mutate(offspring: Tensor, rate: float = 0.05,
