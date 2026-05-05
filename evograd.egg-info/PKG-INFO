@@ -1,3 +1,42 @@
+Metadata-Version: 2.4
+Name: evograd
+Version: 0.1.0
+Summary: GPU-accelerated evolutionary computation + functional deep learning — one library, two paradigms.
+Author-email: woodRock <j.r.h.wood98@gmail.com>
+License: MIT
+Project-URL: Homepage, https://github.com/woodRock/evograd
+Project-URL: Repository, https://github.com/woodRock/evograd
+Project-URL: Issues, https://github.com/woodRock/evograd/issues
+Keywords: evolutionary computation,genetic algorithm,PSO,deep learning,GPU,MPS,CUDA,PyTorch,neuroevolution,NAS
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: Topic :: Scientific/Engineering :: Mathematics
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.0
+Requires-Dist: numpy
+Provides-Extra: cuda
+Requires-Dist: torch>=2.0; extra == "cuda"
+Provides-Extra: benchmark
+Requires-Dist: deap; extra == "benchmark"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Provides-Extra: all
+Requires-Dist: deap; extra == "all"
+Requires-Dist: pytest; extra == "all"
+Requires-Dist: pytest-cov; extra == "all"
+Requires-Dist: black; extra == "all"
+Requires-Dist: ruff; extra == "all"
+
 <div align="center">
 
 # EvoGrad

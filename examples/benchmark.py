@@ -149,8 +149,8 @@ def bench_ga_evograd():
     engine = EvoEngine(cfg)
 
     def run():
-        pop = Population.gaussian(POP, N_DIM,
-                                   low=-5.12, high=5.12, device=DEVICE)
+        pop = Population.random(POP, N_DIM,
+                                low=-5.12, high=5.12, device=DEVICE)
         engine.run(pop, eg_rastrigin)
 
     return run
@@ -388,10 +388,12 @@ def bench_gp_deap():
     tb.register("select",     tools.selTournament, tournsize=5)
     tb.register("mate",       deap_gp.cxOnePoint)
     tb.register("mutate",     deap_gp.mutUniform, expr=tb.expr, pset=pset)
+    tb.decorate("mate",   deap_gp.staticLimit(key=operator.attrgetter("height"), max_value=6))
+    tb.decorate("mutate", deap_gp.staticLimit(key=operator.attrgetter("height"), max_value=6))
 
     def evaluate(ind):
-        fn = tb.compile(expr=ind)
         try:
+            fn = tb.compile(expr=ind)
             mse = sum((fn(x) - y)**2
                       for x, y in zip(GP_X_NP, GP_Y_NP)) / len(GP_X_NP)
             return (float(mse),)
