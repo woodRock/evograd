@@ -46,7 +46,7 @@ class Tensor:
     __slots__ = ("_data", "_type")
 
     def __init__(self, data: torch.Tensor, ttype: Optional[TensorType] = None):
-        object.__setattr__(self, "_data", data.detach() if data.requires_grad else data)
+        object.__setattr__(self, "_data", data)
         if ttype is None:
             shape = tuple(s if s != -1 else None for s in data.shape)
             ttype = TensorType(shape)

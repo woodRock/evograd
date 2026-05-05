@@ -43,6 +43,32 @@ class Layer:
     def eval(self) -> "Layer":
         return self
 
+    def to(self, device: str) -> "Layer":
+        """Recursive move to device for all parameters and sub-layers."""
+        for name, value in self.__dict__.items():
+            if isinstance(value, (Layer, torch.nn.Module, torch.Tensor, torch.nn.Parameter)):
+                if hasattr(value, "to"):
+                    setattr(self, name, value.to(device))
+            elif isinstance(value, list):
+                new_list = []
+                for item in value:
+                    if hasattr(item, "to"):
+                        new_list.append(item.to(device))
+                    else:
+                        new_list.append(item)
+                setattr(self, name, new_list)
+        return self
+
+    def load_from_genome(self, genome: Tensor):
+        """Standardised way to load flattened weights from evolutionary search."""
+        params = self.parameters()
+        offset = 0
+        for p in params:
+            n = p.numel()
+            p.data.copy_(genome.data[offset:offset + n].reshape(p.shape))
+            offset += n
+        return self
+
 
 class Sequential(Layer):
     def __init__(self, *layers: Layer):
@@ -281,6 +307,37 @@ class Flatten(Layer):
 
     def forward(self, x: Tensor) -> Tensor:
         return Tensor(x.data.flatten(self._start))
+
+
+# ------------------------------------------------------------------ #
+# Loss Layers (stateless)
+# ------------------------------------------------------------------ #
+
+class CrossEntropyLoss(Layer):
+    def __init__(self, reduction: str = "mean"):
+        self._reduction = reduction
+
+    def forward(self, logits: Tensor, target: Tensor) -> Tensor:
+        return F.cross_entropy(logits, target, reduction=self._reduction)
+
+
+class MSELoss(Layer):
+    def __init__(self, reduction: str = "mean"):
+        self._reduction = reduction
+
+    def forward(self, pred: Tensor, target: Tensor) -> Tensor:
+        return F.mse_loss(pred, target, reduction=self._reduction)
+
+
+class BCELoss(Layer):
+    """Binary Cross Entropy with Logits."""
+    def __init__(self, reduction: str = "mean"):
+        self._reduction = reduction
+
+    def forward(self, logits: Tensor, target: Tensor) -> Tensor:
+        return F.binary_cross_entropy_with_logits(
+            logits, target, reduction=self._reduction
+        )
 
 
 # ------------------------------------------------------------------ #

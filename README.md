@@ -28,6 +28,8 @@ The same `Tensor` primitive powers a NumPy-style functional deep learning stack,
 - **Vectorised evolutionary algorithms** — GA, PSO, EDA (UMDA), (μ,λ)-ES, and linear GP, all expressed as batched tensor ops
 - **Functional neural networks** — immutable tensors, pure-function layers, no implicit state
 - **Hybrid training** — evolutionary warm-start followed by Adam/SGD fine-tuning in a single `HybridTrainer` call
+- **Native Data Pipeline** — `TensorDataset` and `DataLoader` for efficient batching of EvoGrad Tensors
+- **PyTorch-like Training** — `Adam`/`SGD` optimizers, standard schedulers, and `xavier`/`kaiming` initializers
 - **First-class Apple Silicon** — automatic MPS dispatch; ops unsupported by MPS fall back to CPU transparently
 - **CUDA support** — optional custom CUDA kernels; pure-PyTorch fallback ships with no build step
 - **Rich operator library** — 4 selection strategies, 5 crossover ops, 5 mutation ops, all O(P·G) on-device
