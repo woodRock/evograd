@@ -52,6 +52,7 @@ packages = [
     "evograd.ml",
     "evograd.mps",
     "evograd.nn",
+    "evograd.nn.models",
 ]
 
 [tool.setuptools.package-dir]

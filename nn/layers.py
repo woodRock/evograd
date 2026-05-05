@@ -25,8 +25,8 @@ from . import functional as F
 class Layer:
     """Base class. Subclass and implement forward()."""
 
-    def __call__(self, x: Tensor) -> Tensor:
-        return self.forward(x)
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
 
     def forward(self, x: Tensor) -> Tensor:
         raise NotImplementedError
@@ -305,3 +305,187 @@ class Residual(Layer):
     def eval(self):
         self._sub.eval()
         return self
+
+
+class AvgPool2d(Layer):
+    def __init__(self, kernel_size: int, stride: Optional[int] = None, padding: int = 0):
+        self._k = kernel_size
+        self._s = stride if stride is not None else kernel_size
+        self._p = padding
+
+    def forward(self, x: Tensor) -> Tensor:
+        return F.avg_pool2d(x, self._k, self._s)
+
+
+class BatchNorm2d(Layer):
+    def __init__(self, num_features: int, eps: float = 1e-5, device: str = "cpu"):
+        self._mod = nn.BatchNorm2d(num_features, eps=eps)
+        self._mod.to(device)
+        self._training = True
+
+    def train(self) -> "BatchNorm2d":
+        self._mod.train(); self._training = True; return self
+
+    def eval(self) -> "BatchNorm2d":
+        self._mod.eval(); self._training = False; return self
+
+    def forward(self, x: Tensor) -> Tensor:
+        return Tensor(self._mod(x.data))
+
+    def parameters(self):
+        return list(self._mod.parameters())
+
+
+class ConvTranspose2d(Layer):
+    def __init__(self, in_ch: int, out_ch: int, kernel: int = 4,
+                 stride: int = 2, padding: int = 1, output_padding: int = 0,
+                 bias: bool = True, device: str = "cpu"):
+        self._mod = nn.ConvTranspose2d(in_ch, out_ch, kernel, stride,
+                                        padding, output_padding=output_padding,
+                                        bias=bias)
+        self._mod.to(device)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return Tensor(self._mod(x.data))
+
+    def parameters(self):
+        return list(self._mod.parameters())
+
+
+class LeakyReLU(Layer):
+    def __init__(self, negative_slope: float = 0.01):
+        self._slope = negative_slope
+
+    def forward(self, x: Tensor) -> Tensor:
+        return F.leaky_relu(x, self._slope)
+
+
+class LSTM(Layer):
+    """Wraps nn.LSTM. forward() returns (output_Tensor, (hn_Tensor, cn_Tensor))."""
+    def __init__(self, input_size: int, hidden_size: int, num_layers: int = 1,
+                 bidirectional: bool = False, batch_first: bool = True,
+                 dropout: float = 0.0, device: str = "cpu"):
+        self._mod = nn.LSTM(input_size, hidden_size, num_layers,
+                            batch_first=batch_first,
+                            bidirectional=bidirectional,
+                            dropout=dropout if num_layers > 1 else 0.0)
+        self._mod.to(device)
+        self._hs, self._nl = hidden_size, num_layers
+        self._bidir, self._bf = bidirectional, batch_first
+        self._device = device
+
+    def forward(self, x: Tensor, state=None):
+        if state is None:
+            dirs = 2 if self._bidir else 1
+            B = x.data.size(0) if self._bf else x.data.size(1)
+            h0 = torch.zeros(self._nl * dirs, B, self._hs, device=x.data.device)
+            c0 = torch.zeros_like(h0)
+        else:
+            h0, c0 = state[0].data, state[1].data
+        out, (hn, cn) = self._mod(x.data, (h0, c0))
+        return Tensor(out), (Tensor(hn), Tensor(cn))
+
+    def parameters(self):
+        return list(self._mod.parameters())
+
+
+class GRU(Layer):
+    """Wraps nn.GRU. forward() returns (output_Tensor, hn_Tensor)."""
+    def __init__(self, input_size: int, hidden_size: int, num_layers: int = 1,
+                 bidirectional: bool = False, batch_first: bool = True,
+                 dropout: float = 0.0, device: str = "cpu"):
+        self._mod = nn.GRU(input_size, hidden_size, num_layers,
+                           batch_first=batch_first,
+                           bidirectional=bidirectional,
+                           dropout=dropout if num_layers > 1 else 0.0)
+        self._mod.to(device)
+        self._hs, self._nl = hidden_size, num_layers
+        self._bidir, self._bf = bidirectional, batch_first
+        self._device = device
+
+    def forward(self, x: Tensor, h0: Optional[Tensor] = None):
+        dirs = 2 if self._bidir else 1
+        if h0 is None:
+            B = x.data.size(0) if self._bf else x.data.size(1)
+            h0_t = torch.zeros(self._nl * dirs, B, self._hs, device=x.data.device)
+        else:
+            h0_t = h0.data
+        out, hn = self._mod(x.data, h0_t)
+        return Tensor(out), Tensor(hn)
+
+    def parameters(self):
+        return list(self._mod.parameters())
+
+
+class MultiHeadAttention(Layer):
+    """Scaled dot-product multi-head attention."""
+    def __init__(self, d_model: int, num_heads: int, dropout: float = 0.0,
+                 device: str = "cpu"):
+        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads
+        self._dropout_p = dropout
+        self._training = True
+        self.q_proj = Linear(d_model, d_model, device=device)
+        self.k_proj = Linear(d_model, d_model, device=device)
+        self.v_proj = Linear(d_model, d_model, device=device)
+        self.out_proj = Linear(d_model, d_model, device=device)
+
+    def forward(self, query: Tensor, key: Tensor, value: Tensor,
+                mask: Optional[Tensor] = None) -> Tensor:
+        B, T_q, _ = query.data.shape
+        T_kv = key.data.shape[1]
+        H, D = self.num_heads, self.head_dim
+
+        q = self.q_proj(query).data.view(B, T_q, H, D).transpose(1, 2)
+        k = self.k_proj(key).data.view(B, T_kv, H, D).transpose(1, 2)
+        v = self.v_proj(value).data.view(B, T_kv, H, D).transpose(1, 2)
+
+        dp = self._dropout_p if self._training else 0.0
+        attn = F.scaled_dot_product_attention(
+            Tensor(q), Tensor(k), Tensor(v), mask, dp
+        )
+        out = attn.data.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
+        return self.out_proj(Tensor(out))
+
+    def parameters(self):
+        params = []
+        for m in [self.q_proj, self.k_proj, self.v_proj, self.out_proj]:
+            params.extend(m.parameters())
+        return params
+
+    def train(self) -> "MultiHeadAttention":
+        self._training = True; return self
+
+    def eval(self) -> "MultiHeadAttention":
+        self._training = False; return self
+
+
+class PositionalEncoding(Layer):
+    """Sinusoidal positional encoding (Vaswani et al. 2017)."""
+    def __init__(self, d_model: int, max_len: int = 5000,
+                 dropout: float = 0.0, device: str = "cpu"):
+        self._dropout = Dropout(dropout)
+        pe = torch.zeros(max_len, d_model)
+        pos = torch.arange(max_len, dtype=torch.float).unsqueeze(1)
+        div = torch.exp(
+            torch.arange(0, d_model, 2, dtype=torch.float)
+            * (-math.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(pos * div)
+        if d_model % 2 == 0:
+            pe[:, 1::2] = torch.cos(pos * div)
+        else:
+            pe[:, 1::2] = torch.cos(pos * div[:-1])
+        self._pe = pe.unsqueeze(0).to(device)
+
+    def forward(self, x: Tensor) -> Tensor:
+        T = x.data.shape[1]
+        return self._dropout(Tensor(x.data + self._pe[:, :T, :]))
+
+    def train(self) -> "PositionalEncoding":
+        self._dropout.train(); return self
+
+    def eval(self) -> "PositionalEncoding":
+        self._dropout.eval(); return self

@@ -213,3 +213,15 @@ class Compose:
         if isinstance(other, Compose):
             return Compose(*self.fns, *other.fns)
         return Compose(*self.fns, other)
+
+
+def conv_transpose2d(x: Tensor, weight: Tensor, bias: Tensor,
+                     stride: int = 1, padding: int = 0,
+                     output_padding: int = 0) -> Tensor:
+    return Tensor(F.conv_transpose2d(
+        x.data, weight.data, bias.data, stride, padding, output_padding
+    ))
+
+def local_response_norm(x: Tensor, size: int, alpha: float = 1e-4,
+                        beta: float = 0.75, k: float = 1.0) -> Tensor:
+    return Tensor(F.local_response_norm(x.data, size, alpha, beta, k))
